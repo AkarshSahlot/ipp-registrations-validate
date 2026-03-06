@@ -145,8 +145,20 @@ func (db *RegDB) loadRecord(record xmldoc.Element, errata bool) error {
 		return nil
 	}
 
-	// Elements with empty syntax must be links
+	// Flag empty or self-closing syntax tags. The IANA database uses
+	// <syntax/> for link records, but we still want to track them.
 	if syntax.Elem.Text == "" {
+		attrName := name.Elem.Text
+		if member.Elem.Text != "" {
+			attrName = name.Elem.Text + "/" + member.Elem.Text
+		}
+		if submember.Elem.Text != "" {
+			attrName = attrName + "/" + submember.Elem.Text
+		}
+		err := fmt.Errorf("%s: %s: empty syntax field",
+			collection.Elem.Text, attrName)
+		db.Errors = append(db.Errors, err)
+
 		from, to, err := db.newLink(
 			collection.Elem.Text,
 			name.Elem.Text,
