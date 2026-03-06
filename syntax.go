@@ -51,7 +51,9 @@ type tokValue struct {
 	min, max int32
 }
 
-// ParseSyntax parses attribute syntax.
+// ParseSyntax takes a raw syntax string (e.g. "1setOf integer(0:MAX)")
+// and breaks it down into structured properties. We need this to quickly
+// compare syntaxes later to find duplicates or resolve aliases.
 func ParseSyntax(s string) (syntax Syntax, err error) {
 	// Tokenize and decode syntax string
 	tokens, err := syntax.decodeTokens(s)
@@ -94,7 +96,9 @@ func ParseSyntax(s string) (syntax Syntax, err error) {
 	return
 }
 
-// Equal reports if two syntaxes are equal
+// Equal reports if two syntaxes are functionally identical.
+// Since tags are sorted and deduped during parsing, a deep equal
+// check works perfectly here.
 func (syntax Syntax) Equal(syntax2 Syntax) bool {
 	return reflect.DeepEqual(syntax, syntax2)
 }
@@ -117,8 +121,8 @@ func (syntax Syntax) FormatMax() string {
 	return strconv.FormatInt(int64(syntax.Max), 10)
 }
 
-// decodeTokens splits syntax string into tokens and decodes
-// these tokens
+// decodeTokens splits the syntax string into individual parts (tokens)
+// and maps them to internal representations.
 func (syntax Syntax) decodeTokens(s string) ([]any, error) {
 	strtok := syntax.tokenize(s)
 	tokens := make([]any, 0, len(strtok))
@@ -168,9 +172,8 @@ func (syntax Syntax) decodeTokens(s string) ([]any, error) {
 	return tokens, nil
 }
 
-// decodeLimits decodes MIN/MAX limits after the
-// sequence of string tokens and returns decoded
-// values and count of consumed tokens
+// decodeLimits extracts the numeric MIN/MAX boundaries that sometimes
+// follow syntax keywords (e.g. "integer(1:MAX)").
 func (syntax Syntax) decodeLimits(strtok []string) (
 	min, max int32, consumed int, err error) {
 

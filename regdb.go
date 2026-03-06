@@ -114,11 +114,10 @@ func (db *RegDB) Load(file string, xml xmldoc.Element, errata bool) error {
 	return nil
 }
 
-// Finalize must be called after all attribute files are loaded,
-// using the [RegDB.Load] calls.
-//
-// It finalizes the database and performs all needed integrity
-// checks.
+// Finalize must be called after all attribute files are loaded.
+// It acts as a second pass over the database to build cross-references
+// (like resolving aliases and links) and validate structural integrity
+// (like catching collections that are completely empty).
 func (db *RegDB) Finalize() error {
 	db.expandErrata()
 	db.handleSuffixes()
@@ -496,9 +495,9 @@ func (db *RegDB) resolveLink(attr *RegDBAttr) {
 	}
 }
 
-// expandErrata expands db.Errata entries, not used before to
-// replace the existent attributes (i.e., those Errata entries
-// that injects new attributes).
+// expandErrata injects any errata attributes that weren't already used to
+// overwrite existing attributes. This handles the case where errata adds
+// entirely new attributes to the database rather than just fixing old ones.
 func (db *RegDB) expandErrata() {
 	// Collect all errata attributes in the sorted by name order
 	names := make([]string, 0, len(db.Errata))
@@ -520,8 +519,10 @@ func (db *RegDB) expandErrata() {
 	}
 }
 
-// handleSuffixes handles attributes, marked by suffixes
-// ("(extension)", "(deprecated)" etc) in their names.
+// handleSuffixes groups attributes that share a base name but have
+// different suffixes like "(extension)" or "(deprecated)". This helps
+// us choose the most relevant definition (e.g. prioritize extensions)
+// and flags conflicts if definitions contradict each other.
 func (db *RegDB) handleSuffixes() {
 	// Roll over top-level collections
 	names := db.CollectionNames()

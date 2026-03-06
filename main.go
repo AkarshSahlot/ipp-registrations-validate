@@ -55,7 +55,8 @@ func commandHandler(ctx context.Context, inv *argv.Invocation) error {
 	}
 	var input, errata []fileXML
 
-	// Load errata files
+	// Load errata files first. We keep these separate because errata
+	// entries take precedence and will overwrite standard definitions.
 	for _, file := range inv.Values("-e") {
 		xml, err := XMLLoad(file)
 		if err != nil {
@@ -75,7 +76,9 @@ func commandHandler(ctx context.Context, inv *argv.Invocation) error {
 		input = append(input, fileXML{file, xml})
 	}
 
-	// Process loaded files
+	// Process loaded files into the in-memory database.
+	// We load errata first so the database knows which attributes
+	// have overrides before it parses the standard IANA dataset.
 	for _, f := range errata {
 		err := db.Load(f.name, f.xml, true)
 		if err != nil {
@@ -90,6 +93,9 @@ func commandHandler(ctx context.Context, inv *argv.Invocation) error {
 		}
 	}
 
+	// Finalize does all the cross-referencing: it expands errata elements,
+	// links attributes that borrow from other collections, and checks for
+	// empty collections that were just stubs.
 	if err := db.Finalize(); err != nil {
 		return err
 	}
