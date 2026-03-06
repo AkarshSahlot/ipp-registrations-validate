@@ -1,3 +1,8 @@
-CLEAN	= ipp-registrations-generate
+all:
+	go build
 
-include ../../Rules.mak
+clean:
+	rm -f ipp-registrations-validate
+
+test:
+	go test ./...
