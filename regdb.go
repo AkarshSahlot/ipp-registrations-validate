@@ -50,6 +50,8 @@ type RegDBAttr struct {
 	XRef         string                // Document it is defined in
 	UseMembers   []string              // Use members from other attr
 	Members      map[string]*RegDBAttr // Members, by name
+	File         string                // File where it was defined
+	Line         int                   // Line number in the file
 }
 
 // NewRegDB creates a new RegDB
@@ -66,7 +68,7 @@ func NewRegDB() *RegDB {
 }
 
 // Load loads attributes from XML
-func (db *RegDB) Load(xml xmldoc.Element, errata bool) error {
+func (db *RegDB) Load(file string, xml xmldoc.Element, errata bool) error {
 	for _, registry := range xml.Children {
 		// Ignore elements other that "registry"
 		if registry.Name != "registry" {
@@ -80,7 +82,7 @@ func (db *RegDB) Load(xml xmldoc.Element, errata bool) error {
 				continue
 			}
 
-			err := db.loadRecord(record, errata)
+			err := db.loadRecord(file, record, errata)
 			if err != nil {
 				return err
 			}
@@ -93,13 +95,13 @@ func (db *RegDB) Load(xml xmldoc.Element, errata bool) error {
 				var err error
 				switch chld.Name {
 				case "skip":
-					err = db.loadSkip(chld)
+					err = db.loadSkip(file, chld)
 
 				case "subst":
-					err = db.loadSubst(chld)
+					err = db.loadSubst(file, chld)
 
 				case "use-members":
-					err = db.loadUseMembers(chld)
+					err = db.loadUseMembers(file, chld)
 				}
 
 				if err != nil {
@@ -127,7 +129,7 @@ func (db *RegDB) Finalize() error {
 
 // loadRecord handles the "record" element, which contains
 // attribute description.
-func (db *RegDB) loadRecord(record xmldoc.Element, errata bool) error {
+func (db *RegDB) loadRecord(file string, record xmldoc.Element, errata bool) error {
 	// Lookup fields we are interested in
 	collection := xmldoc.Lookup{Name: "collection", Required: true}
 	name := xmldoc.Lookup{Name: "name", Required: true}
@@ -140,7 +142,7 @@ func (db *RegDB) loadRecord(record xmldoc.Element, errata bool) error {
 		&member, &submember)
 
 	if missed != nil {
-		err := fmt.Errorf("record missing required fields: %v", missed)
+		err := fmt.Errorf("%s:%d: record missing required field: %q", file, record.Line, missed.Name)
 		db.Errors = append(db.Errors, err)
 		return nil
 	}
@@ -155,11 +157,12 @@ func (db *RegDB) loadRecord(record xmldoc.Element, errata bool) error {
 		if submember.Elem.Text != "" {
 			attrName = attrName + "/" + submember.Elem.Text
 		}
-		err := fmt.Errorf("%s: %s: empty syntax field",
-			collection.Elem.Text, attrName)
+		err := fmt.Errorf("%s:%d: %s/%s: empty syntax field",
+			file, syntax.Elem.Line, collection.Elem.Text, attrName)
 		db.Errors = append(db.Errors, err)
 
 		from, to, err := db.newLink(
+			file, record.Line,
 			collection.Elem.Text,
 			name.Elem.Text,
 			member.Elem.Text,
@@ -168,7 +171,7 @@ func (db *RegDB) loadRecord(record xmldoc.Element, errata bool) error {
 		if err == nil && !db.ErrataSkip.Contains(from) {
 			attr := db.AllAttrs[from]
 			if attr == nil {
-				err = fmt.Errorf("%s->%s: broken source", from, to)
+				err = fmt.Errorf("%s:%d: %s->%s: broken source", file, record.Line, from, to)
 			} else {
 				attr.UseMembers = append(attr.UseMembers, to)
 			}
@@ -185,6 +188,8 @@ func (db *RegDB) loadRecord(record xmldoc.Element, errata bool) error {
 	}
 
 	attr, err := db.newRegDBAttr(
+		file,
+		record.Line,
 		collection.Elem.Text,
 		name.Elem.Text,
 		member.Elem.Text,
@@ -213,7 +218,7 @@ func (db *RegDB) loadRecord(record xmldoc.Element, errata bool) error {
 // loadUseMembers handles the "use-members" element, inserts attribute
 // borrowing (so recipient attribute will use members, defined
 // for some other attribute).
-func (db *RegDB) loadUseMembers(link xmldoc.Element) error {
+func (db *RegDB) loadUseMembers(file string, link xmldoc.Element) error {
 	// There are may be multiple <name>, <except> and <use> elements.
 	// Gather them all.
 	names := []string{}
@@ -232,17 +237,17 @@ func (db *RegDB) loadUseMembers(link xmldoc.Element) error {
 	}
 
 	if len(names) == 0 {
-		return fmt.Errorf("link: missed <name> elements")
+		return fmt.Errorf("%s:%d: link: missed <name> elements", file, link.Line)
 	}
 
 	if len(uses) == 0 && len(exceptions) == 0 {
-		return fmt.Errorf("link: missed <use> and <except> elements")
+		return fmt.Errorf("%s:%d: link: missed <use> and <except> elements", file, link.Line)
 	}
 
 	// Now create links
 	for _, name := range names {
 		for _, use := range uses {
-			err := db.newDirectLink(name, use)
+			err := db.newDirectLink(file, link.Line, name, use)
 			if err != nil {
 				return err
 			}
@@ -254,7 +259,7 @@ func (db *RegDB) loadUseMembers(link xmldoc.Element) error {
 		for _, except := range exceptions {
 			path := name + "/" + except
 			if !db.Exceptions.TestAndAdd(path) {
-				err := fmt.Errorf("%q: duplicated exception", path)
+				err := fmt.Errorf("%s:%d: %q: duplicated exception", file, link.Line, path)
 				return err
 			}
 		}
@@ -265,17 +270,17 @@ func (db *RegDB) loadUseMembers(link xmldoc.Element) error {
 
 // loadSkip handles the "skip" element, which causes named
 // attribute to be ignored.
-func (db *RegDB) loadSkip(skip xmldoc.Element) error {
+func (db *RegDB) loadSkip(file string, skip xmldoc.Element) error {
 	_, ok := skip.ChildByName("name")
 	if !ok {
-		return fmt.Errorf(`skip: missed <name> element`)
+		return fmt.Errorf("%s:%d: skip: missed <name> element", file, skip.Line)
 	}
 
 	// There are may be multiple "name" elements, roll over all of them
 	for _, name := range skip.Children {
 		if name.Name == "name" {
 			if !db.ErrataSkip.TestAndAdd(name.Text) {
-				return fmt.Errorf(`skip %s: already added`, name.Text)
+				return fmt.Errorf("%s:%d: skip %s: already added", file, name.Line, name.Text)
 			}
 		}
 	}
@@ -287,16 +292,16 @@ func (db *RegDB) loadSkip(skip xmldoc.Element) error {
 // to the link target (for example, media-col->Job Template/media-col).
 //
 // This is useful, when link target is ambiguous.
-func (db *RegDB) loadSubst(subst xmldoc.Element) error {
+func (db *RegDB) loadSubst(file string, subst xmldoc.Element) error {
 	name := xmldoc.Lookup{Name: "name", Required: true}
 	path := xmldoc.Lookup{Name: "path", Required: true}
 
 	missed := subst.Lookup(&name, &path)
 	if missed != nil {
-		return fmt.Errorf(`subst %s: already added`, name.Name)
+		return fmt.Errorf("%s:%d: subst %s: already added", file, subst.Line, name.Name)
 	}
 
-	return db.addSubst(name.Elem.Text, path.Elem.Text)
+	return db.addSubst(file, subst.Line, name.Elem.Text, path.Elem.Text)
 }
 
 // addErrata adds attribute to the db.Errata
@@ -304,7 +309,7 @@ func (db *RegDB) addErrata(attr *RegDBAttr) error {
 	path := attr.Path()
 
 	if db.Errata[path] != nil {
-		err := fmt.Errorf("%s: duplicated errata attribute", path)
+		err := fmt.Errorf("%s:%d: %s: duplicated errata attribute", attr.File, attr.Line, path)
 		return err
 	}
 
@@ -334,8 +339,8 @@ func (db *RegDB) add(attr *RegDBAttr) error {
 		}
 
 		if parent == nil {
-			err := fmt.Errorf("%s: no parent (%s)",
-				attr.Path(), strings.Join(path, "/"))
+			err := fmt.Errorf("%s:%d: %s: no parent (%s)",
+				attr.File, attr.Line, attr.Path(), strings.Join(path, "/"))
 			return err
 		}
 	}
@@ -347,8 +352,8 @@ func (db *RegDB) add(attr *RegDBAttr) error {
 	}
 
 	if attr2 := pmap[attr.Name]; attr2 != nil {
-		err := fmt.Errorf("%s: conflicts with %s",
-			attr.Path(), attr2.Path())
+		err := fmt.Errorf("%s:%d: %s: conflicts with %s",
+			attr.File, attr.Line, attr.Path(), attr2.Path())
 		return err
 	}
 
@@ -464,18 +469,18 @@ func (db *RegDB) resolveLink(attr *RegDBAttr) {
 			var err error
 			switch {
 			case attr2 == nil:
-				err = fmt.Errorf("%s->%s: broken link",
-					attr.Path(), use)
+				err = fmt.Errorf("%s:%d: %s->%s: broken link",
+					attr.File, attr.Line, attr.Path(), use)
 				db.Errors = append(db.Errors, err)
 
 			case attr2 == attr:
-				err = fmt.Errorf("%s->%s: link to self",
-					attr.Path(), use)
+				err = fmt.Errorf("%s:%d: %s->%s: link to self",
+					attr.File, attr.Line, attr.Path(), use)
 				db.Errors = append(db.Errors, err)
 
 			case len(attr2.Members) == 0:
-				err = fmt.Errorf("%s->%s: link target enpty",
-					attr.Path(), use)
+				err = fmt.Errorf("%s:%d: %s->%s: link target enpty",
+					attr.File, attr.Line, attr.Path(), use)
 				db.Errors = append(db.Errors, err)
 			}
 
@@ -633,7 +638,7 @@ func (db *RegDB) checkEmptyCollectionsRecursive(attrs map[string]*RegDBAttr) {
 	for _, name := range names {
 		attr := attrs[name]
 		if attr.Syntax.Collection && len(attr.Members) == 0 && len(attr.UseMembers) == 0 {
-			err := fmt.Errorf("%s: collection missing member definitions", attr.Path())
+			err := fmt.Errorf("%s:%d: %s: collection missing member definitions", attr.File, attr.Line, attr.Path())
 			db.Errors = append(db.Errors, err)
 		}
 
@@ -691,7 +696,7 @@ func (db *RegDB) resolveAliases(aliases []*RegDBAttr) (*RegDBAttr, error) {
 	buf := &bytes.Buffer{}
 	fmt.Fprintf(buf, "Conflicting attribytes:\n")
 	for _, attr := range candidates {
-		fmt.Fprintf(buf, "  %s\n", attr.Path())
+		fmt.Fprintf(buf, "  %s:%d: %s\n", attr.File, attr.Line, attr.Path())
 		fmt.Fprintf(buf, "  > %s\n", attr.SyntaxString)
 	}
 
@@ -710,7 +715,7 @@ func (db *RegDB) resolveAliases(aliases []*RegDBAttr) (*RegDBAttr, error) {
 //	  <syntax/>
 //	  <xref type="uri" data="https://ftp.pwg.org/pub/pwg/candidates/cs-ippdocobject12-20240517-5100.5.pdf">PWG5100.5</xref>
 //	</record>
-func (db *RegDB) newLink(collection, name, member, submember string) (
+func (db *RegDB) newLink(file string, line int, collection, name, member, submember string) (
 	from, to string, err error) {
 
 	var path []string
@@ -728,19 +733,19 @@ func (db *RegDB) newLink(collection, name, member, submember string) (
 		panic("internal error")
 	}
 
+	from = strings.Join(path, "/")
+
 	if fields := strings.Split(to, `"`); len(fields) == 3 {
-		err := fmt.Errorf("%s: broken collection reference %q", from, to)
+		err := fmt.Errorf("%s:%d: %s: broken collection reference %q", file, line, from, to)
 		db.Errors = append(db.Errors, err)
 		to = fields[1]
 	} else if strings.HasPrefix(to, "<Any ") {
-		err := fmt.Errorf("%s: broken collection reference %q", from, to)
+		err := fmt.Errorf("%s:%d: %s: broken collection reference %q", file, line, from, to)
 		db.Errors = append(db.Errors, err)
 		to = strings.TrimPrefix(to, "<Any ")
 		to = strings.TrimSuffix(to, " attribute>")
 		to = strings.TrimSuffix(to, " Attribute>")
 	}
-
-	from = strings.Join(path, "/")
 
 	return
 }
@@ -748,11 +753,11 @@ func (db *RegDB) newLink(collection, name, member, submember string) (
 // newDirectLink creates new link directly, using absolute paths.
 // It allows to create link targeted to the different top-level collection.
 // Used only in the errata.xml with the following syntax:
-func (db *RegDB) newDirectLink(from, to string) error {
+func (db *RegDB) newDirectLink(file string, line int, from, to string) error {
 	links := db.AddUseMembers[from]
 	for _, link := range links {
 		if link == to {
-			err := fmt.Errorf("%s->%s: duplicated link", from, to)
+			err := fmt.Errorf("%s:%d: %s->%s: duplicated link", file, line, from, to)
 			return err
 		}
 	}
@@ -763,9 +768,9 @@ func (db *RegDB) newDirectLink(from, to string) error {
 }
 
 // addSubst adds a substitution for the attribute link target
-func (db *RegDB) addSubst(name, use string) error {
+func (db *RegDB) addSubst(file string, line int, name, use string) error {
 	if _, dup := db.Subst[name]; dup {
-		err := fmt.Errorf("%s: duplicated substutution)", name)
+		err := fmt.Errorf("%s:%d: %s: duplicated substutution)", file, line, name)
 		return err
 	}
 
@@ -774,11 +779,13 @@ func (db *RegDB) addSubst(name, use string) error {
 }
 
 // newRegDBAttr creates a new RegDBAttr
-func (db *RegDB) newRegDBAttr(collection, name, member, submember,
+func (db *RegDB) newRegDBAttr(file string, line int, collection, name, member, submember,
 	syntax, xref string) (*RegDBAttr, error) {
 
 	// Create RegDBAttr structure
 	attr := &RegDBAttr{
+		File:         file,
+		Line:         line,
 		Collection:   collection,
 		SyntaxString: syntax,
 		XRef:         xref,

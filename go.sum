@@ -1,4 +1,4 @@
-github.com/OpenPrinting/go-mfp v0.0.0-20260227212046-a8e0f8067a92 h1:5E2vUHAhrw0K2bbJY0cSNvpFTCMfCnhT7fW0LUU4r5A=
-github.com/OpenPrinting/go-mfp v0.0.0-20260227212046-a8e0f8067a92/go.mod h1:jhFH60TYrTon+nZoA7+eaLyF8XUeiCXe0dLzXHGwCMQ=
+github.com/OpenPrinting/go-mfp v0.0.0-20260305135723-566b0e7bcd9e h1:ii+8jONPXqqxEyFmoYbQprJ9VV8EAkpoMMbdhhlUvnw=
+github.com/OpenPrinting/go-mfp v0.0.0-20260305135723-566b0e7bcd9e/go.mod h1:jhFH60TYrTon+nZoA7+eaLyF8XUeiCXe0dLzXHGwCMQ=
 github.com/OpenPrinting/goipp v1.2.1-0.20251215193635-0b9b9ce7d24f h1:BTMjMSlo/ojAWa8M420PxrZTzB6KfYv0nCe43/D1UII=
 github.com/OpenPrinting/goipp v1.2.1-0.20251215193635-0b9b9ce7d24f/go.mod h1:ot2iw+QF7fVLaX+55JUNlF5YSDNiXVo2LRAv21iGcQI=

@@ -49,7 +49,11 @@ func commandHandler(ctx context.Context, inv *argv.Invocation) error {
 	// Create the database
 	db := NewRegDB()
 
-	var input, errata []xmldoc.Element
+	type fileXML struct {
+		name string
+		xml  xmldoc.Element
+	}
+	var input, errata []fileXML
 
 	// Load errata files
 	for _, file := range inv.Values("-e") {
@@ -58,7 +62,7 @@ func commandHandler(ctx context.Context, inv *argv.Invocation) error {
 			return err
 		}
 
-		errata = append(errata, xml)
+		errata = append(errata, fileXML{file, xml})
 	}
 
 	// Load input file
@@ -68,19 +72,19 @@ func commandHandler(ctx context.Context, inv *argv.Invocation) error {
 			return err
 		}
 
-		input = append(input, xml)
+		input = append(input, fileXML{file, xml})
 	}
 
 	// Process loaded files
-	for _, xml := range errata {
-		err := db.Load(xml, true)
+	for _, f := range errata {
+		err := db.Load(f.name, f.xml, true)
 		if err != nil {
 			return err
 		}
 	}
 
-	for _, xml := range input {
-		err := db.Load(xml, false)
+	for _, f := range input {
+		err := db.Load(f.name, f.xml, false)
 		if err != nil {
 			return err
 		}
