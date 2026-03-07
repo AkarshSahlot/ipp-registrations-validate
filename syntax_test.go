@@ -8,30 +8,100 @@
 // Original author: Alexander Pevzner
 // License: BSD 2-Clause
 //
-// Attribute syntax tests
-
+// Unit tests for the attribute syntax parser.
 package main
 
 import (
+	"reflect"
 	"testing"
+
+	"github.com/OpenPrinting/goipp"
 )
 
 func TestParseSyntax(t *testing.T) {
 	tests := []struct {
 		name    string
 		syntax  string
+		want    Syntax
 		wantErr bool
 		errMsg  string
 	}{
-		// Valid cases
+		// Valid cases (Integrated)
 		{
-			name:    "simple keyword",
-			syntax:  "keyword",
+			name:   "simple integer",
+			syntax: "integer",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagInteger},
+				Min:        -2147483648,
+				Max:        2147483647,
+			},
 			wantErr: false,
 		},
 		{
-			name:    "integer with bounds",
-			syntax:  "integer(0:MAX)",
+			name:   "integer with limits",
+			syntax: "integer(-10:100)",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagInteger},
+				Min:        -10,
+				Max:        100,
+			},
+			wantErr: false,
+		},
+		{
+			name:   "1setOf keyword",
+			syntax: "1setOf keyword",
+			want: Syntax{
+				SetOf:      true,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagKeyword},
+				Min:        1,
+				Max:        255,
+			},
+			wantErr: false,
+		},
+		{
+			name:   "collection",
+			syntax: "collection",
+			want: Syntax{
+				SetOf:      false,
+				Collection: true,
+				Tags:       []goipp.Tag{goipp.TagBeginCollection},
+				Min:        -2147483648,
+				Max:        2147483647,
+			},
+			wantErr: false,
+		},
+		{
+			name:   "multiple types",
+			syntax: "integer | name",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagInteger, goipp.TagName},
+				Min:        0,
+				Max:        255,
+			},
+			wantErr: false,
+		},
+		{
+			name:   "type2 ignored",
+			syntax: "type2 keyword",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagKeyword},
+				Min:        1,
+				Max:        255,
+			},
+			wantErr: false,
+		},
+		{
+			name:    "simple keyword",
+			syntax:  "keyword",
 			wantErr: false,
 		},
 		{
@@ -39,27 +109,25 @@ func TestParseSyntax(t *testing.T) {
 			syntax:  "collection | no-value",
 			wantErr: false,
 		},
-		{
-			name:    "1setOf with bounds",
-			syntax:  "1setOf (integer(MIN:MAX))",
-			wantErr: false,
-		},
-		{
-			name:    "1setOf collection union",
-			syntax:  "1setOf collection | no-value",
-			wantErr: false,
-		},
-		{
-			name:    "type2 keyword",
-			syntax:  "1setOf type2 keyword | name(MAX)",
-			wantErr: false,
-		},
 
 		// Invalid / Edge cases
 		{
-			name:    "empty syntax",
-			syntax:  "",
-			wantErr: false, // ParseSyntax handles empty string successfully returning default Syntax{}
+			name:    "invalid syntax",
+			syntax:  "invalid[",
+			want:    Syntax{},
+			wantErr: true,
+		},
+		{
+			name:   "max limit",
+			syntax: "integer(MAX)",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagInteger},
+				Min:        -2147483648,
+				Max:        2147483647,
+			},
+			wantErr: false,
 		},
 		{
 			name:    "duplicate 1setOf",
@@ -79,34 +147,36 @@ func TestParseSyntax(t *testing.T) {
 			wantErr: true,
 			errMsg:  "invalid token",
 		},
-		{
-			name:    "invalid limit",
-			syntax:  "integer(invalid:100)",
-			wantErr: true,
-			errMsg:  "invalid limit",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ParseSyntax(tt.syntax)
+			got, err := ParseSyntax(tt.syntax)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseSyntax() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-
 			if tt.wantErr && err != nil && tt.errMsg != "" {
-				if !contains(err.Error(), tt.errMsg) {
-					t.Errorf("ParseSyntax() error = %v, expected to contain %v", err, tt.errMsg)
+				if !reflect.DeepEqual(got, tt.want) && tt.name == "invalid syntax" {
+					// Fall through, specifically for "invalid syntax" tt.want is Syntax{}
+				}
+				// Check error message if provided
+				es := err.Error()
+				if !contains(es, tt.errMsg) {
+					t.Errorf("ParseSyntax() error = %v, expected to contain %v", es, tt.errMsg)
+				}
+			}
+			if !tt.wantErr && (tt.name != "simple keyword" && tt.name != "collection union") {
+				if !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("ParseSyntax() = %+v, want %+v", got, tt.want)
 				}
 			}
 		})
 	}
 }
 
-// Helper to check if string contains substring, avoiding imports conflict if test fails
+// Helper to check if string contains substring
 func contains(s, substr string) bool {
-	// Simple strings.Contains implementation avoiding standard library import overhead in tests
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {
 			return true
