@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	"github.com/OpenPrinting/go-mfp/argv"
-	"github.com/OpenPrinting/go-mfp/util/xmldoc"
 )
 
 // Command describes command options
@@ -53,21 +52,17 @@ func commandHandler(ctx context.Context, inv *argv.Invocation) error {
 	// Create the database
 	db := NewRegDB()
 
-	type fileXML struct {
-		name string
-		xml  xmldoc.Element
-	}
-	var input, errata []fileXML
-
-	// Load errata files first. We keep these separate because errata
-	// entries take precedence and will overwrite standard definitions.
+	// Load errata files
 	for _, file := range inv.Values("-e") {
 		xml, err := XMLLoad(file)
 		if err != nil {
 			return err
 		}
 
-		errata = append(errata, fileXML{file, xml})
+		err = db.Load(file, xml, true)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Load input file
@@ -77,29 +72,12 @@ func commandHandler(ctx context.Context, inv *argv.Invocation) error {
 			return err
 		}
 
-		input = append(input, fileXML{file, xml})
-	}
-
-	// Process loaded files into the in-memory database.
-	// We load errata first so the database knows which attributes
-	// have overrides before it parses the standard IANA dataset.
-	for _, f := range errata {
-		err := db.Load(f.name, f.xml, true)
+		err = db.Load(file, xml, false)
 		if err != nil {
 			return err
 		}
 	}
 
-	for _, f := range input {
-		err := db.Load(f.name, f.xml, false)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Finalize does all the cross-referencing: it expands errata elements,
-	// links attributes that borrow from other collections, and checks for
-	// empty collections that were just stubs.
 	if err := db.Finalize(); err != nil {
 		return err
 	}

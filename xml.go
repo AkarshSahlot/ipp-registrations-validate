@@ -19,10 +19,7 @@ import (
 	"github.com/OpenPrinting/go-mfp/util/xmldoc"
 )
 
-// XMLLoad reads the XML file using our custom xmldoc parser.
-// We use a custom parser instead of Go's encoding/xml because the IANA
-// database is huge and loosely structured; extracting it into a generic DOM
-// element tree is much easier than defining hundreds of structs.
+// XMLLoad reads the XML file.
 func XMLLoad(name string) (xmldoc.Element, error) {
 	// Open input file
 	file, err := os.Open(name)
@@ -43,12 +40,14 @@ func XMLLoad(name string) (xmldoc.Element, error) {
 	return xml, nil
 }
 
-// xmlCleanup performs some post-load cleanup on the loaded XML document:
+// xmlCleanup performs some post-load cleanup on the loaded
+// XML document:
 //
-//  1. Our XML parser doesn't support XML files without namespace prefixes,
-//     and the IANA registration database lacks them. The parser translates
-//     them into "-:". This function strips those dummy prefixes out.
-//  2. Text content is trimmed to avoid trailing/leading spaces messing up matches.
+//  1. Our XML parser doesn't support XML files without namespace
+//     prefixes, while IANA registration database is one of these
+//     files. If namespace prefixes are missed, XML parser translates
+//     them into "-:". This function removes these unneeded prefixes.
+//  2. Element's Text is trimmed (just in case).
 func xmlCleanup(root *xmldoc.Element) {
 	root.Name, _ = strings.CutPrefix(root.Name, "-:")
 	for i := range root.Children {
