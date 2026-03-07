@@ -27,13 +27,19 @@ import (
 type RegDB struct {
 	Collections   map[string]map[string]*RegDBAttr // Attrs by collection
 	AllAttrs      map[string]*RegDBAttr            // All attrs, by path
-	AddUseMembers map[string][]string              // Added attr.UseMembers
+	AddUseMembers map[string][]RegDBLink           // Added attr.UseMembers
 	Subst         map[string]string                // Abs paths for links
 	ErrataSkip    generic.Set[string]              // Errata: ignored attrs
 	Errata        map[string]*RegDBAttr            // Errata: replaced by path
 	Errors        []error                          // Collected errors
 	Borrowings    []RegDBBorrowing                 // Members borrowings
 	Exceptions    generic.Set[string]              // Excluded members
+}
+
+type RegDBLink struct {
+	Path string
+	File string
+	Line int
 }
 
 // RegDBBorrowing represents relations between collection attributes,
@@ -52,7 +58,7 @@ type RegDBAttr struct {
 	SyntaxString string                // Syntax string
 	Syntax       Syntax                // Attribute syntax, parsed
 	XRef         string                // Document it is defined in
-	UseMembers   []string              // Use members from other attr
+	UseMembers   []RegDBLink           // Use members from other attr
 	Members      map[string]*RegDBAttr // Members, by name
 	File         string                // File where it was defined
 	Line         int                   // Line number in the file
@@ -63,7 +69,7 @@ func NewRegDB() *RegDB {
 	return &RegDB{
 		Collections:   make(map[string]map[string]*RegDBAttr),
 		AllAttrs:      make(map[string]*RegDBAttr),
-		AddUseMembers: make(map[string][]string),
+		AddUseMembers: make(map[string][]RegDBLink),
 		Subst:         make(map[string]string),
 		ErrataSkip:    generic.NewSet[string](),
 		Errata:        make(map[string]*RegDBAttr),
@@ -153,17 +159,6 @@ func (db *RegDB) loadRecord(file string, record xmldoc.Element, errata bool) err
 	// Flag empty or self-closing syntax tags. The IANA database uses
 	// <syntax/> for link records, but we still want to track them.
 	if syntax.Elem.Text == "" {
-		attrName := name.Elem.Text
-		if member.Elem.Text != "" {
-			attrName = name.Elem.Text + "/" + member.Elem.Text
-		}
-		if submember.Elem.Text != "" {
-			attrName = attrName + "/" + submember.Elem.Text
-		}
-		err := fmt.Errorf("%s:%d: %s/%s: empty syntax field",
-			file, syntax.Elem.Line, collection.Elem.Text, attrName)
-		db.Errors = append(db.Errors, err)
-
 		from, to, err := db.newLink(
 			file, record.Line,
 			collection.Elem.Text,
@@ -176,7 +171,7 @@ func (db *RegDB) loadRecord(file string, record xmldoc.Element, errata bool) err
 			if attr == nil {
 				err = fmt.Errorf("%s:%d: %s->%s: broken source", file, record.Line, from, to)
 			} else {
-				attr.UseMembers = append(attr.UseMembers, to)
+				attr.UseMembers = append(attr.UseMembers, RegDBLink{Path: to, File: file, Line: record.Line})
 			}
 		}
 
@@ -262,8 +257,7 @@ func (db *RegDB) loadUseMembers(file string, link xmldoc.Element) error {
 		for _, except := range exceptions {
 			path := name + "/" + except
 			if !db.Exceptions.TestAndAdd(path) {
-				err := fmt.Errorf("%s:%d: %q: duplicated exception", file, link.Line, path)
-				return err
+				return fmt.Errorf("%s:%d: %q: duplicated exception", file, link.Line, path)
 			}
 		}
 	}
@@ -437,8 +431,9 @@ func (db *RegDB) resolveLink(attr *RegDBAttr) {
 	}
 
 	// Roll over all attr.UseMembers
-	for i, use := range attr.UseMembers {
+	for i, link := range attr.UseMembers {
 		// Lookup substitutions
+		use := link.Path
 		if subst, ok := db.Subst[use]; ok {
 			use = subst
 		}
@@ -472,18 +467,21 @@ func (db *RegDB) resolveLink(attr *RegDBAttr) {
 			var err error
 			switch {
 			case attr2 == nil:
-				err = fmt.Errorf("%s:%d: %s->%s: broken link",
-					attr.File, attr.Line, attr.Path(), use)
+				err = fmt.Errorf("%s: %s->%s: broken link",
+					loc(link.File, link.Line),
+					attr.Path(), use)
 				db.Errors = append(db.Errors, err)
 
 			case attr2 == attr:
-				err = fmt.Errorf("%s:%d: %s->%s: link to self",
-					attr.File, attr.Line, attr.Path(), use)
+				err = fmt.Errorf("%s: %s->%s: link to self",
+					loc(link.File, link.Line),
+					attr.Path(), use)
 				db.Errors = append(db.Errors, err)
 
 			case len(attr2.Members) == 0:
-				err = fmt.Errorf("%s:%d: %s->%s: link target enpty",
-					attr.File, attr.Line, attr.Path(), use)
+				err = fmt.Errorf("%s: %s->%s: link target empty",
+					loc(link.File, link.Line),
+					attr.Path(), use)
 				db.Errors = append(db.Errors, err)
 			}
 
@@ -493,7 +491,7 @@ func (db *RegDB) resolveLink(attr *RegDBAttr) {
 		}
 
 		// Save resolved link
-		attr.UseMembers[i] = use
+		attr.UseMembers[i].Path = use
 		db.Borrowings = append(db.Borrowings,
 			RegDBBorrowing{attr.PurePath(), use})
 	}
@@ -738,44 +736,38 @@ func (db *RegDB) newLink(file string, line int, collection, name, member, submem
 		panic("internal error")
 	}
 
-	from = strings.Join(path, "/")
-
+	// The member names in the IANA XML sometimes have quotes or
+	// "any attribute" markers. We strip those out to get the pure name.
 	if fields := strings.Split(to, `"`); len(fields) == 3 {
-		err := fmt.Errorf("%s:%d: %s: broken collection reference %q", file, line, from, to)
-		db.Errors = append(db.Errors, err)
 		to = fields[1]
 	} else if strings.HasPrefix(to, "<Any ") {
-		err := fmt.Errorf("%s:%d: %s: broken collection reference %q", file, line, from, to)
-		db.Errors = append(db.Errors, err)
 		to = strings.TrimPrefix(to, "<Any ")
 		to = strings.TrimSuffix(to, " attribute>")
 		to = strings.TrimSuffix(to, " Attribute>")
 	}
 
+	from = strings.Join(path, "/")
+
 	return
 }
 
-// newDirectLink creates new link directly, using absolute paths.
-// It allows to create link targeted to the different top-level collection.
-// Used only in the errata.xml with the following syntax:
 func (db *RegDB) newDirectLink(file string, line int, from, to string) error {
 	links := db.AddUseMembers[from]
 	for _, link := range links {
-		if link == to {
+		if link.Path == to {
 			err := fmt.Errorf("%s:%d: %s->%s: duplicated link", file, line, from, to)
 			return err
 		}
 	}
 
-	db.AddUseMembers[from] = append(links, to)
+	db.AddUseMembers[from] = append(links, RegDBLink{Path: to, File: file, Line: line})
 
 	return nil
 }
 
-// addSubst adds a substitution for the attribute link target
 func (db *RegDB) addSubst(file string, line int, name, use string) error {
 	if _, dup := db.Subst[name]; dup {
-		err := fmt.Errorf("%s:%d: %s: duplicated substutution)", file, line, name)
+		err := fmt.Errorf("%s:%d: %s: duplicated substitution)", file, line, name)
 		return err
 	}
 
@@ -783,21 +775,18 @@ func (db *RegDB) addSubst(file string, line int, name, use string) error {
 	return nil
 }
 
-// newRegDBAttr creates a new RegDBAttr
 func (db *RegDB) newRegDBAttr(file string, line int, collection, name, member, submember,
 	syntax, xref string) (*RegDBAttr, error) {
 
-	// Create RegDBAttr structure
 	attr := &RegDBAttr{
-		File:         file,
-		Line:         line,
 		Collection:   collection,
 		SyntaxString: syntax,
 		XRef:         xref,
 		Members:      make(map[string]*RegDBAttr),
+		File:         file,
+		Line:         line,
 	}
 
-	// Populate Name and Parents
 	switch {
 	case name != "" && member == "" && submember == "":
 		attr.Name = name
@@ -814,26 +803,19 @@ func (db *RegDB) newRegDBAttr(file string, line int, collection, name, member, s
 		panic("internal error")
 	}
 
-	// Check for errata. If attribute is found in errata, it effectively
-	// replaces normal attribute by the errata entry.
-	//
-	// Do it before we attempt to parse the syntax, so broken syntax
-	// can be fixed this way.
 	if errata := db.Errata[attr.Path()]; errata != nil {
 		return errata, nil
 	}
 
-	// Parse syntax
 	var err error
 	attr.Syntax, err = ParseSyntax(syntax)
 	if err != nil {
-		err = fmt.Errorf("%s: %w", attr.Path(), err)
+		err = fmt.Errorf("%s: %s: %w", loc(file, line), attr.Path(), err)
 	}
 
 	return attr, err
 }
 
-// SplitName returns attribute's base name and suffixes, separated.
 func (attr *RegDBAttr) SplitName() (name, suffixes string) {
 	if i := strings.IndexByte(attr.Name, '('); i >= 0 {
 		return attr.Name[:i], attr.Name[i:]
@@ -842,14 +824,11 @@ func (attr *RegDBAttr) SplitName() (name, suffixes string) {
 	return attr.Name, ""
 }
 
-// PureName returns attribute name with possible suffixes stripped
 func (attr *RegDBAttr) PureName() string {
 	name, _ := attr.SplitName()
 	return name
 }
 
-// Path returns full path to the attribute in the following form:
-// "Collection/name/member/submember"
 func (attr *RegDBAttr) Path() string {
 	path := []string{attr.Collection}
 	path = append(path, attr.Parents...)
@@ -857,8 +836,6 @@ func (attr *RegDBAttr) Path() string {
 	return strings.Join(path, "/")
 }
 
-// PurePath returns full path to the attribute with possible
-// suffixes stripped in all path elements.
 func (attr *RegDBAttr) PurePath() string {
 	path := []string{attr.Collection}
 	path = append(path, attr.Parents...)
@@ -871,4 +848,8 @@ func (attr *RegDBAttr) PurePath() string {
 	}
 
 	return strings.Join(path, "/")
+}
+
+func loc(file string, line int) string {
+	return fmt.Sprintf("%s:%d", strings.TrimPrefix(file, "/"), line)
 }
