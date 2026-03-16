@@ -1,6 +1,3 @@
-// MFP - Miulti-Function Printers and scanners toolkit
-// IPP registrations to Go converter.
-//
 // Copyright (C) 2024 and up by Alexander Pevzner (pzz@apevzner.com)
 // See LICENSE for license terms and conditions
 //
@@ -13,6 +10,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/OpenPrinting/goipp"
@@ -20,63 +18,112 @@ import (
 
 func TestParseSyntax(t *testing.T) {
 	tests := []struct {
-		input    string
-		expected Syntax
+		name    string
+		syntax  string
+		want    Syntax
+		wantErr bool
 	}{
 		{
-			input: "integer",
-			expected: Syntax{
-				Tags: []goipp.Tag{goipp.TagInteger},
-				Min:  -2147483648,
-				Max:  2147483647,
-			},
-		},
-		{
-			input: "integer (0:MAX)",
-			expected: Syntax{
-				Tags: []goipp.Tag{goipp.TagInteger},
-				Min:  0,
-				Max:  2147483647,
-			},
-		},
-		{
-			input: "1setOf (integer(MIN:MAX))",
-			expected: Syntax{
-				SetOf: true,
-				Tags:  []goipp.Tag{goipp.TagInteger},
-				Min:   -2147483648,
-				Max:   2147483647,
-			},
-		},
-		{
-			input: "collection | no-value",
-			expected: Syntax{
-				Collection: true,
-				Tags:       []goipp.Tag{goipp.TagBeginCollection, goipp.TagNoValue},
+			name:   "simple integer",
+			syntax: "integer",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagInteger},
 				Min:        -2147483648,
 				Max:        2147483647,
 			},
+			wantErr: false,
 		},
 		{
-			input: "1setOf type2 keyword | name(MAX)",
-			expected: Syntax{
-				SetOf: true,
-				Tags:  []goipp.Tag{goipp.TagKeyword, goipp.TagName},
-				Min:   1,
-				Max:   255,
+			name:   "integer with limits",
+			syntax: "integer(-10:100)",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagInteger},
+				Min:        -10,
+				Max:        100,
 			},
+			wantErr: false,
+		},
+		{
+			name:   "1setOf keyword",
+			syntax: "1setOf keyword",
+			want: Syntax{
+				SetOf:      true,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagKeyword},
+				Min:        1,
+				Max:        255,
+			},
+			wantErr: false,
+		},
+		{
+			name:   "collection",
+			syntax: "collection",
+			want: Syntax{
+				SetOf:      false,
+				Collection: true,
+				Tags:       []goipp.Tag{goipp.TagBeginCollection},
+				Min:        -2147483648,
+				Max:        2147483647,
+			},
+			wantErr: false,
+		},
+		{
+			name:   "multiple types",
+			syntax: "integer | name",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagInteger, goipp.TagName},
+				Min:        0,
+				Max:        255,
+			},
+			wantErr: false,
+		},
+		{
+			name:    "invalid syntax",
+			syntax:  "invalid[",
+			want:    Syntax{},
+			wantErr: true,
+		},
+		{
+			name:   "max limit",
+			syntax: "integer(MAX)",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagInteger},
+				Min:        -2147483648,
+				Max:        2147483647,
+			},
+			wantErr: false,
+		},
+		{
+			name:   "type2 ignored",
+			syntax: "type2 keyword",
+			want: Syntax{
+				SetOf:      false,
+				Collection: false,
+				Tags:       []goipp.Tag{goipp.TagKeyword},
+				Min:        1,
+				Max:        255,
+			},
+			wantErr: false,
 		},
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.input, func(t *testing.T) {
-			got, err := ParseSyntax(tc.input)
-			if err != nil {
-				t.Fatalf("ParseSyntax(%q) failed: %v", tc.input, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseSyntax(tt.syntax)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseSyntax() error = %v, wantErr %v", err, tt.wantErr)
+				return
 			}
-
-			if !got.Equal(tc.expected) {
-				t.Errorf("ParseSyntax(%q) = %+v, want %+v", tc.input, got, tc.expected)
+			if !tt.wantErr && !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ParseSyntax() = %+v, want %+v", got, tt.want)
 			}
 		})
 	}

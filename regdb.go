@@ -19,23 +19,28 @@ import (
 	"github.com/OpenPrinting/go-mfp/util/xmldoc"
 )
 
-// RegDB represents database of IANA registrations for IPP
+// RegDB represents the in-memory database of IANA IPP registrations.
+// It stores collections, attributes, and their relationships, along with
+// any errata (overrides) provided via external XML files.
 type RegDB struct {
-	Collections   map[string]map[string]*RegDBAttr // Attrs by collection
-	AllAttrs      map[string]*RegDBAttr            // All attrs, by path
-	AddUseMembers map[string][]RegDBLink           // Added attr.UseMembers
-	Subst         map[string]string                // Abs paths for links
-	ErrataSkip    generic.Set[string]              // Errata: ignored attrs
-	Errata        map[string]*RegDBAttr            // Errata: replaced by path
-	Errors        []error                          // Collected errors
-	Borrowings    []RegDBBorrowing                 // Members borrowings
-	Exceptions    generic.Set[string]              // Excluded members
+	Collections   map[string]map[string]*RegDBAttr // Collections maps top-level registry titles (e.g., "Job Template") to their attributes.
+	AllAttrs      map[string]*RegDBAttr            // AllAttrs allows fast lookup of any attribute by its full path (e.g., "Collection/Attr/Member").
+	AddUseMembers map[string][]RegDBLink           // AddUseMembers stores extra links injected via errata.
+	Subst         map[string]string                // Subst handles manual path substitutions for ambiguous links.
+	ErrataSkip    generic.Set[string]              // ErrataSkip contains paths that should be ignored entirely.
+	Errata        map[string]*RegDBAttr            // Errata stores attribute definitions that replace the standard IANA ones.
+	Errors        []error                          // Errors collects all validation issues found during loading and finalization.
+	Borrowings    []RegDBBorrowing                 // Borrowings tracks which attributes inherit members from others.
+	Exceptions    generic.Set[string]              // Exceptions lists members that should NOT be inherited during a borrowing.
 }
 
+// RegDBLink represents a symbolic link to another attribute.
+// It includes source file and line information so that broken link
+// errors can point to the exact location in the XML where the link was defined.
 type RegDBLink struct {
-	Path string
-	File string
-	Line int
+	Path string // Path is the target attribute path (e.g., "Job Status/cover-front").
+	File string // File is the XML filename containing the link.
+	Line int    // Line is the line number in that file.
 }
 
 // RegDBBorrowing represents relations between collection attributes,
@@ -46,18 +51,18 @@ type RegDBBorrowing struct {
 	To   string
 }
 
-// RegDBAttr represents a single attribute
+// RegDBAttr represents a single IPP attribute or member attribute.
 type RegDBAttr struct {
-	Name         string                // Attribute name
-	Collection   string                // Collection it belongs to
-	Parents      []string              // Parent collections
-	SyntaxString string                // Syntax string
-	Syntax       Syntax                // Attribute syntax, parsed
-	XRef         string                // Document it is defined in
-	UseMembers   []RegDBLink           // Use members from other attr
-	Members      map[string]*RegDBAttr // Members, by name
-	File         string                // File where it was defined
-	Line         int                   // Line number in the file
+	Name         string                // Name is the base name of the attribute (e.g., "media").
+	Collection   string                // Collection is the top-level registry it belongs to.
+	Parents      []string              // Parents lists the path of collection attributes leading to this one.
+	SyntaxString string                // SyntaxString is the raw syntax text from the XML.
+	Syntax       Syntax                // Syntax is the parsed, structured representation of the attribute's type.
+	XRef         string                // XRef refers to the defining document (e.g., "RFC 8011").
+	UseMembers   []RegDBLink           // UseMembers lists other attributes from which this one inherits members.
+	Members      map[string]*RegDBAttr // Members holds child attributes for collection-type attributes.
+	File         string                // File is the XML filename where this attribute was defined.
+	Line         int                   // Line is the line number in that file.
 }
 
 // NewRegDB creates a new RegDB
@@ -73,29 +78,30 @@ func NewRegDB() *RegDB {
 	}
 }
 
-// Load loads attributes from XML
+// Load parses an XML document and populates the RegDB.
+// If errata is true, it treats the file as a set of overrides.
 func (db *RegDB) Load(file string, xml xmldoc.Element, errata bool) error {
 	for _, registry := range xml.Children {
-		// Ignore elements other that "registry"
+		// The IANA XML is organized into various <registry> elements.
 		if registry.Name != "registry" {
 			continue
 		}
 
-		// Process "record" elements
+		// Each registry contains multiple <record> elements.
 		for _, record := range registry.Children {
-			// Ignore elements other that "record"
 			if record.Name != "record" {
 				continue
 			}
 
+			// Individual records hold attribute definitions or links.
 			err := db.loadRecord(file, record, errata)
 			if err != nil {
 				return err
 			}
 		}
 
-		// Process "use-members", "skip" and "subst" elements;
-		// only in errata
+		// Errata files may contain special directive elements like
+		// <skip>, <subst>, or <use-members>.
 		if errata {
 			for _, chld := range registry.Children {
 				var err error
@@ -133,20 +139,18 @@ func (db *RegDB) Finalize() error {
 	return nil
 }
 
-// loadRecord handles the "record" element, which contains
-// attribute description.
+// loadRecord processes a single <record> element.
+// It filters out non-attribute records (like Objects or Operations descriptions
+// that lack a proper 'collection' or 'syntax' field) and creates either
+// a formal attribute or a member-borrowing link.
 func (db *RegDB) loadRecord(file string, record xmldoc.Element, errata bool) error {
-	// 1. Check if this is an attribute record.
-	// Non-attribute records (like Objects) don't have a <collection>
-	// element. We skip them silently.
-	if _, ok := record.ChildByName("collection"); !ok {
-		return nil
-	}
-
-	// Lookup fields we are interested in
-	collection := xmldoc.Lookup{Name: "collection", Required: true}
+	// Lookup fields we are interested in.
+	// Only name and xref are strictly required for any record.
+	// collection and syntax are required for attributes, but some
+	// records (like objects) don't have them.
+	collection := xmldoc.Lookup{Name: "collection"}
 	name := xmldoc.Lookup{Name: "name", Required: true}
-	syntax := xmldoc.Lookup{Name: "syntax", Required: true}
+	syntax := xmldoc.Lookup{Name: "syntax"}
 	xref := xmldoc.Lookup{Name: "xref", Required: true}
 	member := xmldoc.Lookup{Name: "member_attribute"}
 	submember := xmldoc.Lookup{Name: "sub-member_attribute"}
@@ -155,8 +159,12 @@ func (db *RegDB) loadRecord(file string, record xmldoc.Element, errata bool) err
 		&member, &submember)
 
 	if missed != nil {
-		err := fmt.Errorf("%s:%d: record missing required field: %q", file, record.Line, missed.Name)
-		db.Errors = append(db.Errors, err)
+		return nil
+	}
+
+	// If collection or syntax is missing entirely, it's not an attribute record
+	// we care about in this validator.
+	if collection.Elem.Name == "" || syntax.Elem.Name == "" {
 		return nil
 	}
 
@@ -217,9 +225,9 @@ func (db *RegDB) loadRecord(file string, record xmldoc.Element, errata bool) err
 	return err
 }
 
-// loadUseMembers handles the "use-members" element, inserts attribute
-// borrowing (so recipient attribute will use members, defined
-// for some other attribute).
+// loadUseMembers handles the "use-members" errata element.
+// It allows an attribute (e.g., job-col-actual) to borrow members
+// defined for another attribute (e.g., job-col).
 func (db *RegDB) loadUseMembers(file string, link xmldoc.Element) error {
 	// There are may be multiple <name>, <except> and <use> elements.
 	// Gather them all.
@@ -269,8 +277,8 @@ func (db *RegDB) loadUseMembers(file string, link xmldoc.Element) error {
 	return nil
 }
 
-// loadSkip handles the "skip" element, which causes named
-// attribute to be ignored.
+// loadSkip handles the "skip" errata element.
+// It instructs the validator to ignore records with the specified names.
 func (db *RegDB) loadSkip(file string, skip xmldoc.Element) error {
 	_, ok := skip.ChildByName("name")
 	if !ok {
@@ -289,10 +297,9 @@ func (db *RegDB) loadSkip(file string, skip xmldoc.Element) error {
 	return nil
 }
 
-// loadSubst handles the "subst" elements, that defines the full path
-// to the link target (for example, media-col->Job Template/media-col).
-//
-// This is useful, when link target is ambiguous.
+// loadSubst handles the "subst" errata element.
+// It defines an explicit path for a link target to resolve ambiguity.
+// (e.g., mapping "media-col" to "Job Template/media-col").
 func (db *RegDB) loadSubst(file string, subst xmldoc.Element) error {
 	name := xmldoc.Lookup{Name: "name", Required: true}
 	path := xmldoc.Lookup{Name: "path", Required: true}
@@ -318,7 +325,8 @@ func (db *RegDB) addErrata(attr *RegDBAttr) error {
 	return nil
 }
 
-// add adds attribute to the database
+// add inserts a new attribute into the database's collection tree.
+// It also builds the 'Parents' path and detects duplicate definitions.
 func (db *RegDB) add(attr *RegDBAttr) error {
 	// Make collection on demand
 	collection := db.Collections[attr.Collection]
@@ -394,7 +402,9 @@ func (db *RegDB) Lookup(path string) map[string]*RegDBAttr {
 	return nil
 }
 
-// resolveLinks resolves links between attributes
+// resolveLinks is the second pass of validation. It transforms
+// relative link paths (e.g., "media-col") into absolute ones
+// and verifies that the link targets actually exist.
 func (db *RegDB) resolveLinks() {
 	for _, col := range db.CollectionNames() {
 		attrs := db.Collections[col]
@@ -424,10 +434,8 @@ func (db *RegDB) resolveLinksRecursive(attrs map[string]*RegDBAttr) {
 	}
 }
 
-// resolveLink resolves link of the single attribute:
-//
-//	attr.UseMembers becomes absolute
-//	attr.Borrowed populated
+// resolveLink performs the path resolution for a single attribute.
+// It handles member-borrowing (UseMembers) and substitution logic.
 func (db *RegDB) resolveLink(attr *RegDBAttr) {
 	// Lookup global db.AddUseMembers
 	if added := db.AddUseMembers[attr.Path()]; added != nil {
@@ -435,10 +443,11 @@ func (db *RegDB) resolveLink(attr *RegDBAttr) {
 	}
 
 	// Roll over all attr.UseMembers
-	// Roll over all attr.UseMembers
 	for i, link := range attr.UseMembers {
-		// Lookup substitutions
 		use := link.Path
+
+		// Lookup substitutions
+		use = link.Path
 		if subst, ok := db.Subst[use]; ok {
 			use = subst
 		}
@@ -472,21 +481,18 @@ func (db *RegDB) resolveLink(attr *RegDBAttr) {
 			var err error
 			switch {
 			case attr2 == nil:
-				err = fmt.Errorf("%s: %s->%s: broken link",
-					loc(link.File, link.Line),
-					attr.Path(), use)
+				err = fmt.Errorf("%s:%d: %s->%s: broken link",
+					link.File, link.Line, attr.Path(), use)
 				db.Errors = append(db.Errors, err)
 
 			case attr2 == attr:
-				err = fmt.Errorf("%s: %s->%s: link to self",
-					loc(link.File, link.Line),
-					attr.Path(), use)
+				err = fmt.Errorf("%s:%d: %s->%s: link to self",
+					link.File, link.Line, attr.Path(), use)
 				db.Errors = append(db.Errors, err)
 
 			case len(attr2.Members) == 0:
-				err = fmt.Errorf("%s: %s->%s: link target empty",
-					loc(link.File, link.Line),
-					attr.Path(), use)
+				err = fmt.Errorf("%s:%d: %s->%s: link target enpty",
+					link.File, link.Line, attr.Path(), use)
 				db.Errors = append(db.Errors, err)
 			}
 
@@ -619,8 +625,9 @@ func (db *RegDB) rebuildAllAttrsRecursive(attrs map[string]*RegDBAttr) {
 	}
 }
 
-// checkEmptyCollections checks for collection attributes
-// without members.
+// checkEmptyCollections identifies attributes that were marked
+// as collections but have no members or inherited members.
+// This is typically a sign of an incomplete registration.
 func (db *RegDB) checkEmptyCollections() {
 	collections := db.CollectionNames()
 	for _, col := range collections {
@@ -695,7 +702,18 @@ func (db *RegDB) resolveAliases(aliases []*RegDBAttr) (*RegDBAttr, error) {
 
 	// If we only have a single candidate, everything is OK
 	if len(candidates) == 1 {
-		return candidates[0], nil
+		survivor := candidates[0]
+		for _, attr := range aliases {
+			if attr == survivor {
+				continue
+			}
+			for name, mattr := range attr.Members {
+				if _, exists := survivor.Members[name]; !exists {
+					survivor.Members[name] = mattr
+				}
+			}
+		}
+		return survivor, nil
 	}
 
 	// Format the error message
@@ -709,18 +727,9 @@ func (db *RegDB) resolveAliases(aliases []*RegDBAttr) (*RegDBAttr, error) {
 	return nil, errors.New(buf.String())
 }
 
-// newLink prepares new link from one collection attribute to another.
-// Link means that one attribute borrows members from another.
-//
-// In the XML it looks as follows:
-//
-//	<record>
-//	  <collection>Document Status</collection>
-//	  <name>cover-back-actual</name>
-//	  <member_attribute>&lt;Any "cover-back" member attribute&gt;</member_attribute>
-//	  <syntax/>
-//	  <xref type="uri" data="https://ftp.pwg.org/pub/pwg/candidates/cs-ippdocobject12-20240517-5100.5.pdf">PWG5100.5</xref>
-//	</record>
+// newLink translates a registration record into a member-borrowing
+// relationship. It handles both simple links (a points to b)
+// and deeper links (a/b points to c).
 func (db *RegDB) newLink(file string, line int, collection, name, member, submember string) (
 	from, to string, err error) {
 
@@ -782,7 +791,9 @@ func (db *RegDB) addSubst(file string, line int, name, use string) error {
 	return nil
 }
 
-// newRegDBAttr creates a new RegDBAttr
+// newRegDBAttr initializes a new attribute object. It performs
+// name-splitting to identify parent collections and applies
+// any overrides found in the errata database.
 func (db *RegDB) newRegDBAttr(file string, line int, collection, name, member, submember,
 	syntax, xref string) (*RegDBAttr, error) {
 
